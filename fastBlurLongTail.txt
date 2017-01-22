@@ -1,0 +1,28 @@
+// buggy though. it results in shifts that may be due to NPOT textures and division rounding
+inline gl::Texture run_longtail(gl::Texture src, int lvls, float lvlmul) {
+	auto zoomstate = Shade().tex(src).expr("fetch3()").run();
+	vector<gl::Texture> pyrLevels;
+	for(int i = 0; i < lvls; i++) {
+		auto newZoomstate = singleblur(zoomstate, .5, .5);
+		if(newZoomstate.getWidth() < 1 || newZoomstate.getHeight() < 1) throw runtime_error("too many blur levels");
+		pyrLevels.push_back(newZoomstate);
+		zoomstate = newZoomstate;
+	}
+	for(int i = pyrLevels.size() - 1; i >= 1; i--) {
+		auto& srcPyrLevel = pyrLevels[i];
+		auto& dstPyrLevel = pyrLevels[i-1];
+		auto upscaled = upscale(srcPyrLevel, dstPyrLevel.getSize());
+		globaldict["_mul"] = pow(lvlmul, float(i));
+		dstPyrLevel = shade2(dstPyrLevel, upscaled,
+			"vec3 acc = fetch3(tex);"
+			"vec3 nextSmaller = fetch3(tex2);"
+			"vec3 c = acc + nextSmaller * _mul;"
+			"_out = c;"
+			);
+	}
+	return pyrLevels[0];
+}
+
+inline gl::Texture upscale(gl::Texture src, ci::Vec2i toSize) {
+	return upscale(src, float(toSize.x) / src.getWidth(), float(toSize.y) / src.getHeight());
+}

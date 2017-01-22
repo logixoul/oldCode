@@ -1,0 +1,47 @@
+gl::Texture extrudeTex(gl::Texture src)
+	{
+		globaldict["thres"] = this->surfTensionThres;
+		auto binarized = shade2(src,
+			"float f = fetch1(tex);"
+			//"f = f < thres ? 0.0 : 1.0;"
+			"_out = vec3(f);"
+			);
+		auto state = binarized;
+
+		const int iters = 20;
+		float extudeBlurIters = cfg1::getOpt("extudeBlurIters", 1.0f,
+			[&]() { return keys['b']; },
+			[&]() { return max(0.0f,mouseY)*10+1; });//1.0/iters;
+		for(int i = 0; i < iters; i++)
+		{
+			state = gpuBlur2_4::run(state, extudeBlurIters, 0);
+			//state = gpuBlur2_4::upscale(state, 2.0, 2.0);
+			//state = gpuBlur2_4::singleHVblurAndDownscale(state, .5f, .5f);
+			//state = gauss3tex(state);
+			state = shade2(state, binarized,
+				"float state = fetch1(tex);"
+				"float binary = fetch1(tex2);"
+				"state *= binary / (binary+1.0);"
+				"_out = vec3(state);"
+				//, ShadeOpts().scale(2.0, 2.0)
+				);
+			state = shade2(state, binarized,
+				"float state = fetch1(tex);"
+				"float binary = fetch1(tex2);"
+				"state += binary;"
+				"_out = vec3(state);"
+				);
+		}
+		//state.setMagFilter(GL_NEAREST);
+
+		globaldict["postExtrudeMul"] = cfg1::getOpt("postExtrudeMul", 1.0f,
+			[&]() { return keys['i']; },
+			[&]() { return mouseY; });//1.0/iters;
+		state = shade2(state,
+			"float f = fetch1() * postExtrudeMul;"
+			//"f /= f+1.0;"
+			"_out= vec3(f);"
+			);
+			
+		return state;
+	}
