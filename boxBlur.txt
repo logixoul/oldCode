@@ -1,0 +1,200 @@
+template<class T, class FetchFunc>
+Array2D<T> blur(Array2D<T>& src, int r, T zero = T())
+{
+	Array2D<T> newImg(src.w, src.h);
+	float divide = pow(2.0f * r + 1.0f, 2.0f);
+	for(int x = 0; x < src.w; x++)
+	{
+		T sum = zero;
+		for(int y = -r; y <= r; y++)
+		{
+			sum += FetchFunc::fetch(src, x, y);
+		}
+		for(int y = 0; y < src.h; y++)
+		{
+			newImg(x, y) = sum;
+			sum -= FetchFunc::fetch(src, x, y - r);
+			sum += FetchFunc::fetch(src, x, y + r + 1);
+		}
+	}
+	Array2D<T> newImg2(src.w, src.h);
+	for(int y = 0; y < src.h; y++)
+	{
+		T sum = zero;
+		for(int x = -r; x <= r; x++)
+		{
+			sum += FetchFunc::fetch(newImg, x, y);
+		}
+		for(int x = 0; x < src.w; x++)
+		{
+			newImg2(x, y) = sum;
+			sum -= FetchFunc::fetch(newImg, x - r, y);
+			sum += FetchFunc::fetch(newImg, x + r + 1, y);
+		}
+	}
+	forxy(img)
+		newImg2(p) /= divide;
+	return newImg2;
+}
+template<class T>
+Array2D<T> blur(Array2D<T>& src, int r, T zero = T())
+{
+	return blur<T, WrapModes::DefaultImpl>(src, r, zero);
+}
+template<class T, class FetchFunc>
+void blurFaster_helper1d(Array2D<T>& arr, int r, ivec2 startXY, ivec2 endXY, ivec2 stepXY)
+{
+	// init stuff
+	T zero = ::zero<T>();
+	int d = 2 * r + 1;
+	float normMul = 1.0f / float(d);
+	
+	// setup buffer
+	struct BufferEntry
+	{
+		T val;
+		BufferEntry* next;
+	};
+	vector<BufferEntry> buffer(d);
+	for(int i = 0; i < buffer.size(); i++)
+	{
+		if(i == buffer.size() - 1)
+		{
+			buffer[i].next = &buffer[0];
+			continue;
+		}
+		buffer[i].next = &buffer[i+1];
+	}
+	
+	// fill beginning of buffer
+	BufferEntry* b = &buffer[0];
+	for(int i = -r; i <= r; i++)
+	{
+		ivec2 fetchPos = startXY + i * stepXY;
+		b->val = FetchFunc::fetch(arr, fetchPos.x, fetchPos.y);
+		b = b->next;
+	}
+	
+	// init sum
+	T sum=zero;
+	for(auto& entry: buffer)
+	{
+		sum += entry.val;
+	}
+	
+	// do main work
+	BufferEntry* oldest = &buffer[0];
+	BufferEntry* newest = &buffer[buffer.size() - 1];
+	//const T* startPtr = &arr(startXY);
+	//int ptrStep = &arr(stepXY) - &arr(0, 0);
+	//T* outP = startPtr - r * ptrStep;
+	ivec2 fetchOffset = stepXY * (r + 1);
+	ivec2 outP;
+	for(outP = startXY; outP + fetchOffset != endXY; outP += stepXY) {
+		arr(outP) = sum * normMul;
+		sum -= oldest->val;
+		oldest = oldest->next;
+		newest = newest->next;
+		ivec2 fetchPos = outP + fetchOffset;
+		newest->val = WrapModes::NoWrap::fetch(arr, fetchPos.x, fetchPos.y);
+		sum += newest->val;
+	}
+
+	// do last part
+	for(/*outP already initted*/; outP != endXY; outP += stepXY) {
+		arr(outP) = sum * normMul;
+		sum -= oldest->val;
+		oldest = oldest->next;
+		newest = newest->next;
+		ivec2 fetchPos = outP + fetchOffset;
+		newest->val = FetchFunc::fetch(arr, fetchPos.x, fetchPos.y);
+		sum += newest->val;
+	}
+}
+template<class T, class FetchFunc>
+Array2D<T> blurFaster(Array2D<T>& src, int r, T zero = T())
+{
+	auto newImg = src.clone();
+	// blur columns
+	for(int x = 0; x < src.w; x++)
+	{
+		blurFaster_helper1d<T, FetchFunc>(newImg, r,
+			/*startXY*/ivec2(x, 0),
+			/*endXY*/ivec2(x, src.h),
+			/*stepXY*/ivec2(0, 1));
+	}
+	// blur rows
+	for(int y = 0; y < src.h; y++)
+	{
+		blurFaster_helper1d<T, FetchFunc>(newImg, r,
+			/*startXY*/ivec2(0, y),
+			/*endXY*/ivec2(src.w, y),
+			/*stepXY*/ivec2(1, 0));
+	}
+	return newImg;
+}
+/*template<class T>
+Array2D<T> blur2(Array2D<T> const& src, int r)
+{
+	T zero = ::zero<T>();
+	Array2D<T> newImg(sx, sy);
+	float mul = 1.0f/pow(2.0f * r + 1.0f, 2.0f);
+	auto blur1d = [&](int imax, T* p0, T* pEnd, int step) {
+		vector<T> buffer;
+		int windowSize = 2*r+1;
+		buffer.resize(windowSize, zero);
+		T* back = &buffer[0];
+		T* front = &buffer[buffer.size()-1];
+		T* dst=p0;
+		for(int i = 0; i <= r; i++)
+		{
+			*(back+i+r)=*dst;
+			dst += step;
+		}
+		dst=p0;
+		T sum=zero;
+		T* rStep=r*step;
+		for(dst=p0; dst!=pEnd; dst+=step)
+		{
+			*dst=sum;
+			sum-=*back;
+			front++;if(front==&*buffer.end())front=&buffer[0];
+			back++;if(back==&*buffer.end())back=&buffer[0];
+			*front=*(dst+rStep);
+			sum+=*front;
+		}
+	};
+
+	for(int x = 0; x < sx; x++)
+	{
+		T sum = zero;
+		for(int y = 0; y <= r; y++)
+		{
+			sum += src(x, y);
+		}
+		for(int y = 0; y < sy; y++)
+		{
+			newImg(x, y) = sum;
+			sum -= get_wrapZeros(src, x, y - r);
+			sum += get_wrapZeros(src, x, y + r + 1);
+		}
+	}
+	Array2D<T> newImg2(sx, sy);
+	for(int y = 0; y < sy; y++)
+	{
+		T sum = zero;
+		for(int x = 0; x <= r; x++)
+		{
+			sum += newImg(x, y);
+		}
+		for(int x = 0; x < sx; x++)
+		{
+			newImg2(x, y) = sum;
+			sum -= get_wrapZeros(newImg, x - r, y);
+			sum += get_wrapZeros(newImg, x + r + 1, y);
+		}
+	}
+	forxy(img)
+		newImg2(p) *= mul;
+	return newImg2;
+}*/
